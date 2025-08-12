@@ -1,10 +1,9 @@
 import os
 import httpx
 import json
+import time
 
 timeout = httpx.Timeout(60.0, connect=10.0)  # 60 seconds total timeout, 10s connect
-
-
 
 AIPIPE_TOKEN = os.getenv("AIPIPE_TOKEN")
 API_URL = "https://aipipe.org/openrouter/v1/chat/completions"
@@ -43,13 +42,11 @@ Question:
 Uploaded files:
 {uploaded_files}
 
-
 You are a data extraction specialist.
 Your task is to generate Python 3 code that loads, scrapes, or reads the data needed to answer the user's question.
 
 1(a). Always store the final dataset in a file as {folder}/data.csv file. And if you need to store other files then also store them in this folder. Lastly, add the path and a brief description about the file in "{folder}/metadata.txt".
 1(b). Create code to collect metadata about the data that you collected from scraping (eg. storing details of df using df.info, df.columns, df.head() etc.) in a "{folder}/metadata.txt" file that will help other model to generate code. Add code for creating any folder that doesn't exist like "{folder}".
-
 
 2. Do not perform any analysis or answer the question. Only write code to collect the data.
 
@@ -65,8 +62,6 @@ Your task is to generate Python 3 code that loads, scrapes, or reads the data ne
 
 8. Just scrap the data don;t do anything fancy.
 
-
-
 Return a JSON with:
 1. The 'code' field — Python code that answers the question.
 2. The 'libraries' field — list of required pip install packages.
@@ -77,7 +72,8 @@ Return a JSON with:
 Only return JSON like:
 {{
   "code": "<...>",
-  "libraries": ["pandas", "matplotlib"]
+  "libraries": ["pandas", "matplotlib"],
+  "questions": ["..."]
 }}
 
 lastly i am saying again don't try to solve these questions.
@@ -112,8 +108,7 @@ in metadata also add JSON answer format if present.
                     "additionalProperties": False
                 }
             }
-}
-
+        }
     }
 
     # Path to the file
@@ -123,16 +118,28 @@ in metadata also add JSON answer format if present.
         with open(file_path, "w") as f:
             f.write("")
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(API_URL, headers=HEADERS, json=payload)
-        response.raise_for_status()
-        content = response.json()
-        llm_response = content["choices"][0]["message"]["content"]
-        return json.loads(llm_response)
-    
-    
-
-
+    tries = 0
+    max_tries = 3
+    last_error = None
+    while tries < max_tries:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(API_URL, headers=HEADERS, json=payload)
+                response.raise_for_status()
+                content = response.json()
+                llm_response = content["choices"][0]["message"]["content"]
+                return json.loads(llm_response)
+        except Exception as e:
+            last_error = str(e)
+            # Try to parse for rate-limit or quota delay in error message
+            delay = 60
+            if "quota" in last_error.lower() or "rate limit" in last_error.lower():
+                print(f"Quota or rate limit exceeded. Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                print(f"Error in LLM call: {last_error}. Retrying immediately...")
+            tries += 1
+    return {"error": "Could not get valid response from LLM after retries.", "details": last_error}
 
 
 SYSTEM_PROMPT2 = """
@@ -144,7 +151,6 @@ Your job is to:
 
 Do not include explanations, comments, or extra text outside the JSON.
 """
-
 
 async def answer_with_data(question_text, folder="uploads"):
     metadata_path = os.path.join(folder, "metadata.txt")
@@ -189,9 +195,24 @@ lastly follow answer format and save answer of questions in result as JSON file.
         ]
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(API_URL, headers=HEADERS, json=payload)
-        response.raise_for_status()
-        content = response.json()
-        llm_response = content["choices"][0]["message"]["content"]
-        return llm_response 
+    tries = 0
+    max_tries = 3
+    last_error = None
+    while tries < max_tries:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(API_URL, headers=HEADERS, json=payload)
+                response.raise_for_status()
+                content = response.json()
+                llm_response = content["choices"][0]["message"]["content"]
+                return llm_response
+        except Exception as e:
+            last_error = str(e)
+            delay = 60
+            if "quota" in last_error.lower() or "rate limit" in last_error.lower():
+                print(f"Quota or rate limit exceeded. Waiting {delay} seconds before retry...")
+                time.sleep(delay)
+            else:
+                print(f"Error in LLM call: {last_error}. Retrying immediately...")
+            tries += 1
+    return {"error": "Could not get valid response from LLM after retries.", "details": last_error}
